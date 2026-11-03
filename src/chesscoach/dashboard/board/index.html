@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;background:transparent;color:#e9edf3;font:13px system-ui,sans-serif}
+#wrap{max-width:500px;margin:auto}#board{display:grid;grid-template-columns:repeat(8,1fr);aspect-ratio:1;border:8px solid #1e2b3a;border-radius:10px;overflow:hidden}
+.sq{border:0;border-radius:0;position:relative;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4%;aspect-ratio:1}
+.sq.light{background:#e5dfd1}.sq.dark{background:#718491}.sq.selected{background:#e6b45c}.sq.target:after{content:'';position:absolute;width:24%;height:24%;background:#14233166;border-radius:50%}
+.sq svg{width:100%;height:100%;position:relative;z-index:1}.sq:focus-visible{outline:3px solid #d59b42;outline-offset:-3px}
+.coord{position:absolute;bottom:1px;right:2px;font-size:10px;color:#253342}#status{min-height:28px;padding:8px 0;color:#aeb9c7}
+label{display:flex;align-items:center;gap:8px;color:#aeb9c7}select{background:#1e2b3a;color:#e9edf3;border:1px solid #394a5b;border-radius:4px;padding:4px}
+</style></head><body><div id="wrap"><div id="board" role="group" aria-label="Interactive chessboard"></div><div id="status"></div><label>Promotion <select id="promotion"><option value="q">Queen</option><option value="r">Rook</option><option value="b">Bishop</option><option value="n">Knight</option></select></label></div>
+<script>
+let args={},selected=null;
+const send=(type,extra={})=>window.parent.postMessage({isStreamlitMessage:true,type,...extra},'*');
+function draw(){
+ const root=document.getElementById('board');root.replaceChildren();
+ const ranks=args.orientation==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
+ const files=args.orientation==='black'?'hgfedcba':'abcdefgh';
+ for(const rank of ranks)for(const file of files){
+  const sq=file+rank,b=document.createElement('button'),piece=(args.pieces||{})[sq];
+  b.className='sq '+((files.indexOf(file)+ranks.indexOf(rank))%2?'dark':'light');
+  if(sq===selected)b.classList.add('selected');
+  if((args.legal||[]).some(m=>m.startsWith(selected||'!')&&m.slice(2,4)===sq))b.classList.add('target');
+  b.setAttribute('aria-label',sq+(piece?' '+piece.name:''));b.title=sq;
+  if(piece)b.innerHTML=piece.svg;
+  const label=document.createElement('span');label.className='coord';label.textContent=sq;b.appendChild(label);
+  b.disabled=!!args.disabled;
+  b.onclick=()=>{
+   const options=(args.legal||[]).filter(m=>m.slice(0,2)===selected&&m.slice(2,4)===sq);
+   if(options.length){
+    const move=options.find(m=>m.length===4||m[4]===document.getElementById('promotion').value)||options[0];
+    send('streamlit:setComponentValue',{value:{move,fen:args.fen,event_id:crypto.randomUUID()},dataType:'json'});
+    selected=null;
+   }else selected=(args.legal||[]).some(m=>m.startsWith(sq))?sq:null;
+   draw();
+  };root.appendChild(b);
+ }
+ document.getElementById('status').textContent=args.disabled?'Position review':selected?'Choose a highlighted destination.':(args.turn||'White')+' to move · select a piece.';
+ send('streamlit:setFrameHeight',{height:Math.min(window.innerWidth,500)+82});
+}
+window.addEventListener('message',e=>{if(e.data.type==='streamlit:render'){if(args.fen!==e.data.args.fen)selected=null;args=e.data.args;draw();}});
+window.addEventListener('resize',draw);
+send('streamlit:componentReady',{apiVersion:1});
+send('streamlit:setFrameHeight',{height:582});
+</script></body></html>

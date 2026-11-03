@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chess-improvement-coach"
+version = "0.1.0"
+description = "Local-first, multi-player chess analysis and deliberate practice"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+authors = [{name = "Chess Improvement Coach contributors"}]
+dependencies = [
+  "python-chess>=1.999,<2", "SQLAlchemy>=2.0.36,<3", "alembic>=1.14,<2",
+  "httpx>=0.28,<1", "typer>=0.15,<1", "platformdirs>=4,<5",
+  "pydantic>=2.10,<3", "PyYAML>=6,<7", "streamlit>=1.41,<2", "pandas>=2.2,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "respx>=0.22,<1", "ruff>=0.11,<1", "build>=1.2,<2"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
+[project.scripts]
+chesscoach = "chesscoach.cli:app"
+
+[project.urls]
+Repository = "https://github.com/rahul3008-lab/chess-improvement-coach"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chesscoach"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["engine: requires a locally installed Stockfish executable"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

@@ -1,0 +1,25 @@
+database:
+  url: null  # Default: platform user data directory / chesscoach.db
+providers:
+  default: chess.com
+  historical_revalidate_days: 30
+  request_interval: 0.25
+  timeout: 30
+  retries: 3
+engine:
+  path: stockfish
+  threads: 2
+  hash_mb: 256
+  multipv: 2
+analysis:
+  default_profile: fast
+  fast_depth: 12
+  deep_depth: 18
+  seconds: 0.15
+  deep_seconds: 2.0
+  workers: 1
+  lease_seconds: 900
+  enable_cache: true
+training:
+  daily_minutes: 45
+  spaced_repetition: true
