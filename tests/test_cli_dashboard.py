@@ -72,3 +72,28 @@ def test_dashboard_pages_render_player_data(monkeypatch, tmp_path):
     for page in pages:
         app_test.sidebar.radio[0].set_value(page).run(timeout=30)
         assert not app_test.exception, (page, app_test.exception)
+
+
+def test_dashboard_shows_background_analysis_and_refreshes_status(monkeypatch, tmp_path):
+    from conftest import FAKE_CONFIG
+    from sqlalchemy import select
+
+    from chesscoach.jobs import enqueue
+    from chesscoach.storage.models import Account, AnalysisJob
+
+    monkeypatch.setenv("CHESSCOACH_DATA_DIR", str(tmp_path))
+    db = Database(load_settings().database_url)
+    db.migrate()
+    account_id, _ = import_pgn(db, FIXTURE, "alpha")
+    with db.session() as session:
+        player_id = session.get(Account, account_id).player_id
+    enqueue(db, player_id, FAKE_CONFIG, limit=1)
+    script = Path(__file__).parents[1] / "src/chesscoach/dashboard/app.py"
+    app_test = AppTest.from_file(str(script)).run(timeout=30)
+    assert not app_test.exception
+    assert any("Analysis in progress" in caption.value for caption in app_test.caption)
+    with db.session() as session:
+        session.scalar(select(AnalysisJob)).status = "cancelled"
+    app_test.run(timeout=30)
+    assert not app_test.exception
+    assert not any("Analysis in progress" in caption.value for caption in app_test.caption)

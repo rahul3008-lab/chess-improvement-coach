@@ -27,15 +27,14 @@ def game_ids_for_player(player_id):
     return select(AccountGame.game_id).join(Account).where(Account.player_id == player_id)
 
 
-def enqueue(db, player_id, config, limit=None, priority=0, retry=False):
+def enqueue(db, player_id, config, limit=None, priority=0, retry=False, game_ids=None):
     fingerprint = digest(config)
     count = 0
     with db.session() as session:
-        games = session.scalars(
-            select(Game)
-            .where(Game.id.in_(game_ids_for_player(player_id)))
-            .order_by(Game.played_at.desc(), Game.id.desc())
-        ).all()
+        query = select(Game).where(Game.id.in_(game_ids_for_player(player_id)))
+        if game_ids is not None:
+            query = query.where(Game.id.in_(game_ids))
+        games = session.scalars(query.order_by(Game.played_at.desc(), Game.id.desc())).all()
         for game in games:
             job = session.scalar(
                 select(AnalysisJob).where(
@@ -78,7 +77,7 @@ def recover_expired(db):
         return result.rowcount
 
 
-def claim(db, lease_seconds, player_id=None, config_hash=None):
+def claim(db, lease_seconds, player_id=None, config_hash=None, game_ids=None):
     # Compare-and-swap keeps claims safe across threads AND independent worker processes.
     for _ in range(30):
         with db.session() as session:
@@ -91,6 +90,8 @@ def claim(db, lease_seconds, player_id=None, config_hash=None):
                 query = query.where(AnalysisJob.game_id.in_(game_ids_for_player(player_id)))
             if config_hash:
                 query = query.where(AnalysisJob.config_hash == config_hash)
+            if game_ids is not None:
+                query = query.where(AnalysisJob.game_id.in_(game_ids))
             job_id = session.scalar(query.order_by(AnalysisJob.priority.desc(), AnalysisJob.id).limit(1))
             if job_id is None:
                 return None
@@ -235,6 +236,7 @@ def run_workers(
     workers=None,
     factory=None,
     on_progress=None,
+    game_ids=None,
 ):
     result = WorkerResult(recovered=recover_expired(db))
     stop = threading.Event()
@@ -247,7 +249,7 @@ def run_workers(
             with lock:
                 if max_jobs is not None and claimed >= max_jobs:
                     return
-                item = claim(db, settings.analysis.lease_seconds, player_id, config_hash)
+                item = claim(db, settings.analysis.lease_seconds, player_id, config_hash, game_ids)
                 if item is None:
                     return
                 claimed += 1

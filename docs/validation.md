@@ -6,13 +6,15 @@ Windows/macOS coverage; those remote results must be checked independently.
 
 Executed checks:
 
-- 41 automated tests passed, including a real Stockfish mate/worker integration.
+- 43 automated tests passed, including a real Stockfish mate/worker integration.
 - Offline end-to-end test: import two independent players, add only new games to one,
   analyse only missing work, preserve the other player's profile and training history.
 - Archive revalidation/304 responses, metadata-only edits, missing archives, timeout/
   rate-limit retry, partial imports and interrupted recovery.
 - Atomic queue claims, expired leases, cancellation, retry, engine version/configuration
   changes and history-aware position caching.
+- Fixed game-selection boundaries for bulk analysis, plus dashboard refresh as background
+  job status changes. Selected batches reuse completed results without expanding into older games.
 - SAN/UCI legality including castling, en passant and underpromotion; exact-PV grading,
   calculation length, spaced review, hints, ownership checks and superseded exercises.
 - CLI commands, preference-aware curriculum and all fourteen dashboard pages via

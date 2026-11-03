@@ -52,6 +52,23 @@ def test_atomic_claim_and_expired_recovery(db, imported):
     assert claim(db, 900)[0] == actual[0][0]
 
 
+def test_selected_batch_does_not_queue_or_process_other_games(db, imported, settings):
+    with db.session() as session:
+        ids = list(session.scalars(select(Game.id).order_by(Game.played_at.desc(), Game.id.desc())))
+    selected = [ids[0]]
+    queued, fingerprint = enqueue(db, imported, FAKE_CONFIG, game_ids=selected)
+    assert queued == 1
+    assert enqueue(db, imported, FAKE_CONFIG, game_ids=selected)[0] == 0
+    assert enqueue(db, imported, FAKE_CONFIG)[0] == 1
+    result = run_workers(
+        db, settings, imported, fingerprint, game_ids=selected, factory=lambda _: FakeEngine()
+    )
+    assert result.completed == 1
+    with db.session() as session:
+        assert session.scalar(select(AnalysisJob.status).where(AnalysisJob.game_id == ids[1])) == "pending"
+        assert session.scalar(select(AnalysisJob.status).where(AnalysisJob.game_id == ids[0])) == "completed"
+
+
 def test_failed_job_can_retry_and_wrong_version_is_rejected(db, imported, settings):
     enqueue(db, imported, FAKE_CONFIG, limit=1)
 

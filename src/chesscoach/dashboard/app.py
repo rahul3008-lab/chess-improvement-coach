@@ -10,7 +10,7 @@ from pathlib import Path
 import chess
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from chesscoach.coach import explain_position
 from chesscoach.config import config_path, load_settings
@@ -33,6 +33,8 @@ from chesscoach.reports import evaluation_rows, overview, period_report, refresh
 from chesscoach.storage.db import Database
 from chesscoach.storage.models import (
     Account,
+    AccountGame,
+    AnalysisJob,
     Exercise,
     Game,
     Goal,
@@ -238,6 +240,40 @@ data = overview(db, owner, **filters)
 st.sidebar.caption(f"{data['analysed_games']} analysed · {data['unanalysed_games']} awaiting analysis")
 if st.sidebar.button("Refresh data"):
     st.rerun()
+
+
+@st.fragment(run_every="20s")
+def watch_analysis():
+    """Refresh visible statistics as independent analysis workers commit results."""
+    with db.session() as session:
+        counts = dict(
+            session.execute(
+                select(AnalysisJob.status, func.count())
+                .where(
+                    AnalysisJob.game_id.in_(
+                        select(AccountGame.game_id).join(Account).where(Account.player_id == owner)
+                    )
+                )
+                .group_by(AnalysisJob.status)
+            ).all()
+        )
+    signature = tuple(sorted(counts.items()))
+    key = f"analysis_job_signature_{owner}"
+    previous = st.session_state.get(key)
+    st.session_state[key] = signature
+    if previous is not None and previous != signature:
+        st.rerun()
+    outstanding = counts.get("pending", 0) + counts.get("running", 0)
+    if outstanding:
+        st.caption(
+            f"Analysis in progress · {counts.get('running', 0)} running · "
+            f"{counts.get('pending', 0)} queued. This page refreshes automatically."
+        )
+    if counts.get("failed", 0):
+        st.warning(f"{counts['failed']} analysis job(s) need retry. See chesscoach jobs list for details.")
+
+
+watch_analysis()
 
 
 def diagnosis(phase=None):

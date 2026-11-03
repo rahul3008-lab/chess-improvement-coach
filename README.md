@@ -49,6 +49,8 @@ chesscoach dashboard
 Open [the local dashboard](http://127.0.0.1:8501). It binds to loopback only.
 Start with a small analysis sample, then expand. `--limit` caps new jobs queued and
 jobs processed; it does not discard games. A separate worker can run alongside the UI.
+While jobs are pending or running, the dashboard checks their progress every 20 seconds
+and refreshes its charts and counts when results change.
 
 ```bash
 chesscoach update --provider chess.com --username YOUR_USERNAME
