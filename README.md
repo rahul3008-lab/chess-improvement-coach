@@ -117,6 +117,11 @@ Modes: `mistakes`, `tactics`, `endgame`, `critical`, `opening`, `calculation`. T
 dashboard also has engine play with skill 0–20 and custom FENs. Its clickable board
 has no external JS/CDN dependency. python-chess validates moves, castling, en passant
 and selected promotion pieces server-side. Terminal sessions accept SAN and UCI.
+Click a piece and then its destination: legal moves appear immediately, and illegal
+destinations leave the board unchanged. A wrong practice answer shows “Wrong answer.
+Try again.” and restores the same position without revealing the solution. Use **Hint**
+or **Reveal continuation** when you want help, and **Next position** to move on.
+Practice interactions update independently of the full statistics pages.
 
 Exercises use recorded legal engine variations. Second MultiPV choices within 50cp
 are excluded. Ordinary modes grade the first preferred move; calculation asks for up
@@ -186,6 +191,7 @@ without changing the last fully successful sync timestamp.
 ```bash
 python -m pip install -e '.[dev]'
 pytest -q
+node --test tests/board.test.cjs
 ruff check src tests
 ruff format --check src tests
 python -m build

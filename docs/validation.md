@@ -6,13 +6,18 @@ Windows/macOS coverage; those remote results must be checked independently.
 
 Executed checks:
 
-- 43 automated tests passed, including a real Stockfish mate/worker integration.
+- 47 Python tests passed, including a real Stockfish mate/worker integration, plus
+  9 JavaScript board-interaction tests (Node.js 22+).
 - Offline end-to-end test: import two independent players, add only new games to one,
   analyse only missing work, preserve the other player's profile and training history.
 - Archive revalidation/304 responses, metadata-only edits, missing archives, timeout/
   rate-limit retry, partial imports and interrupted recovery.
 - Atomic queue claims, expired leases, cancellation, retry, engine version/configuration
   changes and history-aware position caching.
+- Click-to-move, unchanged illegal destinations, immediate legal-move previews,
+  server acknowledgements, wrong-answer retries, and special-move previews.
+- Practice selection uses SQL to validate current analyses, without rebuilding the
+  full move-evaluation history. Practice actions skip the full overview calculations.
 - Fixed game-selection boundaries for bulk analysis, plus dashboard refresh as background
   job status changes. Selected batches reuse completed results without expanding into older games.
 - SAN/UCI legality including castling, en passant and underpromotion; exact-PV grading,

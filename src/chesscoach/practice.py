@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import chess
 import chess.syzygy
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from chesscoach.pgn import parse_games
 from chesscoach.reports import evaluation_rows
-from chesscoach.storage.models import Attempt, Exercise, Game, PracticeSession, now
+from chesscoach.storage.models import (
+    Account,
+    AccountGame,
+    AnalysisJob,
+    Attempt,
+    Exercise,
+    Game,
+    MoveEvaluation,
+    PracticeSession,
+    now,
+)
 
 MODES = {"mistakes", "tactics", "endgame", "critical", "opening", "calculation"}
 
@@ -97,18 +108,38 @@ def generate(db, player_id, mode="mistakes", limit=100):
     return created
 
 
-def next_exercises(db, player_id, mode="mistakes", due_only=True):
+def next_exercises(db, player_id, mode="mistakes", due_only=True, include_id=None):
     with db.session() as session:
-        _, _, values = evaluation_rows(session, player_id)
-        current_evaluations = {value.id for value, *_ in values}
+        # Select current job IDs in SQL instead of loading every move and rebuilding every board.
+        ranked = (
+            select(
+                AnalysisJob.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=AnalysisJob.game_id,
+                    order_by=(AnalysisJob.finished_at.desc(), AnalysisJob.id.desc()),
+                )
+                .label("rank"),
+            )
+            .join(Game)
+            .where(
+                AnalysisJob.status == "completed",
+                AnalysisJob.content_hash == Game.content_hash,
+                Game.id.in_(select(AccountGame.game_id).join(Account).where(Account.player_id == player_id)),
+            )
+            .subquery()
+        )
+        current_jobs = select(ranked.c.id).where(ranked.c.rank == 1)
         query = select(Exercise).where(
             Exercise.player_id == player_id,
             Exercise.mode == mode,
             Exercise.active.is_(True),
-            Exercise.evaluation_id.in_(current_evaluations),
+            Exercise.evaluation_id.in_(
+                select(MoveEvaluation.id).where(MoveEvaluation.job_id.in_(current_jobs))
+            ),
         )
         if due_only:
-            query = query.where(Exercise.due_at <= now())
+            query = query.where(or_(Exercise.due_at <= now(), Exercise.id == include_id))
         return session.scalars(query.order_by(Exercise.due_at, Exercise.id)).all()
 
 
@@ -156,7 +187,19 @@ def record_attempt(db, player_id, session_id, exercise_id, moves, seconds, hints
                 hints=hints,
             )
         )
-        if correct and hints == 0:
+        previously_wrong = (
+            session.scalar(
+                select(Attempt.id)
+                .where(
+                    Attempt.session_id == session_id,
+                    Attempt.exercise_id == exercise_id,
+                    Attempt.correct.is_(False),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+        if correct and hints == 0 and not previously_wrong:
             exercise.streak += 1
             exercise.interval_days = min(90, max(1, exercise.interval_days * 2))
         else:
@@ -167,6 +210,32 @@ def record_attempt(db, player_id, session_id, exercise_id, moves, seconds, hints
             else timedelta(minutes=10)
         )
         return correct
+
+
+def submit_answer(db, player_id, exercise, state, moves, spaced=True):
+    """A wrong legal answer records an attempt but keeps the original puzzle ready to retry."""
+    if state["submitted"]:
+        raise ValueError("This exercise is already solved. Reset it to start another attempt.")
+    correct = record_attempt(
+        db,
+        player_id,
+        state["session_id"],
+        exercise.id,
+        moves,
+        time.monotonic() - state["started"],
+        state["hints"],
+        spaced,
+    )
+    state["feedback"] = "correct" if correct else "wrong"
+    state["submitted"] = correct
+    state["board"] = state["initial_board"].copy()
+    if correct:
+        for value in moves:
+            state["board"].push(legal_move(state["board"], value))
+        finish_session(db, player_id, state["session_id"])
+    else:
+        state["started"] = time.monotonic()
+    return correct
 
 
 def source_board(db, player_id, exercise_id):

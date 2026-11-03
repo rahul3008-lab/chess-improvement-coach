@@ -5,40 +5,52 @@
 #wrap{max-width:500px;margin:auto}#board{display:grid;grid-template-columns:repeat(8,1fr);aspect-ratio:1;border:8px solid #1e2b3a;border-radius:10px;overflow:hidden}
 .sq{border:0;border-radius:0;position:relative;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4%;aspect-ratio:1}
 .sq.light{background:#e5dfd1}.sq.dark{background:#718491}.sq.selected{background:#e6b45c}.sq.target:after{content:'';position:absolute;width:24%;height:24%;background:#14233166;border-radius:50%}
-.sq svg{width:100%;height:100%;position:relative;z-index:1}.sq:focus-visible{outline:3px solid #d59b42;outline-offset:-3px}
+.sq svg{width:100%;height:100%;position:relative;z-index:1;pointer-events:none}.sq.last{box-shadow:inset 0 0 0 3px #d59b4277}.sq[disabled]{cursor:default}.sq{touch-action:manipulation;-webkit-tap-highlight-color:transparent}.coord{pointer-events:none}.sq:focus-visible{outline:3px solid #d59b42;outline-offset:-3px}
 .coord{position:absolute;bottom:1px;right:2px;font-size:10px;color:#253342}#status{min-height:28px;padding:8px 0;color:#aeb9c7}
 label{display:flex;align-items:center;gap:8px;color:#aeb9c7}select{background:#1e2b3a;color:#e9edf3;border:1px solid #394a5b;border-radius:4px;padding:4px}
 </style></head><body><div id="wrap"><div id="board" role="group" aria-label="Interactive chessboard"></div><div id="status"></div><label>Promotion <select id="promotion"><option value="q">Queen</option><option value="r">Rook</option><option value="b">Bishop</option><option value="n">Knight</option></select></label></div>
+<script src="board.js"></script>
 <script>
-let args={},selected=null;
 const send=(type,extra={})=>window.parent.postMessage({isStreamlitMessage:true,type,...extra},'*');
+const root=document.getElementById('board'),buttons=new Map();
+let orientation=null,lastHeight=0;
+const controller=ChessCoachBoard.createController(
+ value=>send('streamlit:setComponentValue',{value,dataType:'json'}),draw,()=>crypto.randomUUID()
+);
 function draw(){
- const root=document.getElementById('board');root.replaceChildren();
- const ranks=args.orientation==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
- const files=args.orientation==='black'?'hgfedcba':'abcdefgh';
- for(const rank of ranks)for(const file of files){
-  const sq=file+rank,b=document.createElement('button'),piece=(args.pieces||{})[sq];
-  b.className='sq '+((files.indexOf(file)+ranks.indexOf(rank))%2?'dark':'light');
-  if(sq===selected)b.classList.add('selected');
-  if((args.legal||[]).some(m=>m.startsWith(selected||'!')&&m.slice(2,4)===sq))b.classList.add('target');
-  b.setAttribute('aria-label',sq+(piece?' '+piece.name:''));b.title=sq;
-  if(piece)b.innerHTML=piece.svg;
-  const label=document.createElement('span');label.className='coord';label.textContent=sq;b.appendChild(label);
-  b.disabled=!!args.disabled;
-  b.onclick=()=>{
-   const options=(args.legal||[]).filter(m=>m.slice(0,2)===selected&&m.slice(2,4)===sq);
-   if(options.length){
-    const move=options.find(m=>m.length===4||m[4]===document.getElementById('promotion').value)||options[0];
-    send('streamlit:setComponentValue',{value:{move,fen:args.fen,event_id:crypto.randomUUID()},dataType:'json'});
-    selected=null;
-   }else selected=(args.legal||[]).some(m=>m.startsWith(sq))?sq:null;
-   draw();
-  };root.appendChild(b);
+ const args=controller.args(),state=controller.state;
+ if(orientation!==args.orientation){
+  orientation=args.orientation;buttons.clear();root.replaceChildren();
+  const ranks=orientation==='black'?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];
+  const files=orientation==='black'?'hgfedcba':'abcdefgh';
+  for(const rank of ranks)for(const file of files){
+   const square=file+rank,button=document.createElement('button');
+   button.dataset.square=square;button.dataset.color=(file.charCodeAt(0)+rank)%2?'light':'dark';
+   button.onclick=()=>controller.click(square,document.getElementById('promotion').value);
+   root.appendChild(button);buttons.set(square,button);
+  }
  }
- document.getElementById('status').textContent=args.disabled?'Position review':selected?'Choose a highlighted destination.':(args.turn||'White')+' to move · select a piece.';
- send('streamlit:setFrameHeight',{height:Math.min(window.innerWidth,500)+82});
+ const destinations=new Set(controller.destinations());
+ for(const [square,button] of buttons){
+  const piece=state.pieces[square],symbol=piece?piece.symbol:'';
+  button.className='sq '+button.dataset.color+(state.selected===square?' selected':'')+(destinations.has(square)?' target':'')+
+   (state.lastMove&&[state.lastMove.slice(0,2),state.lastMove.slice(2,4)].includes(square)?' last':'');
+  if(button.dataset.piece!==symbol){
+   button.dataset.piece=symbol;button.innerHTML=piece?piece.svg:'';
+   const label=document.createElement('span');label.className='coord';label.textContent=square;button.appendChild(label);
+  }
+  button.setAttribute('aria-label',square+(piece?' '+piece.name:''));button.title=square;
+  button.disabled=!!args.disabled||!!state.pending;
+ }
+ root.setAttribute('aria-busy',String(!!state.pending));
+ const feedback=args.feedback==='wrong'?'Wrong answer. Try again.':args.feedback==='correct'?'Correct!':'';
+ document.getElementById('status').textContent=state.pending?(args.thinking?'Stockfish is thinking…':'Checking your move…'):
+  args.disabled?'Position review':feedback||(state.selected?'Click a highlighted destination.':(args.turn||'White')+' to move · click a piece, then its destination.');
+ document.getElementById('status').setAttribute('role','status');
+ const height=Math.min(window.innerWidth,500)+82;
+ if(height!==lastHeight){lastHeight=height;send('streamlit:setFrameHeight',{height});}
 }
-window.addEventListener('message',e=>{if(e.data.type==='streamlit:render'){if(args.fen!==e.data.args.fen)selected=null;args=e.data.args;draw();}});
+window.addEventListener('message',event=>{if(event.data.type==='streamlit:render')controller.update(event.data.args);});
 window.addEventListener('resize',draw);
 send('streamlit:componentReady',{apiVersion:1});
 send('streamlit:setFrameHeight',{height:582});

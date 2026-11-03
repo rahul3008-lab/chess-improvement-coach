@@ -97,3 +97,20 @@ def test_dashboard_shows_background_analysis_and_refreshes_status(monkeypatch, t
     app_test.run(timeout=30)
     assert not app_test.exception
     assert not any("Analysis in progress" in caption.value for caption in app_test.caption)
+
+
+def test_practice_page_skips_expensive_overview(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHESSCOACH_DATA_DIR", str(tmp_path))
+    db = Database(load_settings().database_url)
+    db.migrate()
+    import_pgn(db, FIXTURE, "alpha")
+    script = Path(__file__).parents[1] / "src/chesscoach/dashboard/app.py"
+    app_test = AppTest.from_file(str(script)).run(timeout=30)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Practice rebuilt the full dashboard report")
+
+    monkeypatch.setattr("chesscoach.reports.overview", forbidden)
+    app_test.sidebar.radio[0].set_value("Practice Playground").run(timeout=30)
+    assert not app_test.exception
+    assert any("analysed" in item.value for item in app_test.sidebar.caption)

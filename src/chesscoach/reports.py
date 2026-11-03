@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import timedelta
 
-import chess
 from sqlalchemy import delete, func, select
 
 from chesscoach.curriculum import curriculum
@@ -121,7 +120,8 @@ def evaluation_rows(session, player_id, **filters):
     for game, link, account in games:
         job = jobs.get(game.id)
         for value in by_job[job.id] if job else []:
-            turn = "white" if chess.Board(value.fen).turn else "black"
+            # FEN stores the side to move explicitly; no need to reconstruct every historical board.
+            turn = "white" if value.fen.split(" ", 2)[1] == "w" else "black"
             key = (value.id, turn)
             if turn == link.color and key not in seen:
                 values.append((value, game, link, account))
@@ -230,6 +230,23 @@ def overview(db, player_id, **filters):
             if len(jobs) < 20
             else "Descriptive statistics; differences do not establish causation or future rating gains.",
         }
+
+
+def profile_counts(db, player_id):
+    """Small indexed queries for navigation/practice; never materialise game PGNs or evaluations."""
+    ids = select(AccountGame.game_id).join(Account).where(Account.player_id == player_id)
+    with db.session() as session:
+        total = session.scalar(select(func.count()).select_from(Game).where(Game.id.in_(ids)))
+        analysed = session.scalar(
+            select(func.count(func.distinct(AnalysisJob.game_id)))
+            .join(Game)
+            .where(
+                AnalysisJob.game_id.in_(ids),
+                AnalysisJob.status == "completed",
+                AnalysisJob.content_hash == Game.content_hash,
+            )
+        )
+    return {"games": total, "analysed_games": analysed, "unanalysed_games": total - analysed}
 
 
 def refresh_coaching(db, player_id, daily_minutes=45):

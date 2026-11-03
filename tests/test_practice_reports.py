@@ -11,6 +11,8 @@ from chesscoach.practice import (
     legal_move,
     next_exercises,
     record_attempt,
+    source_board,
+    submit_answer,
     validated_pv,
 )
 from chesscoach.reports import overview, period_report, refresh_coaching
@@ -120,3 +122,86 @@ def test_completed_session_rejects_attempt(db, analysed):
     finish_session(db, analysed, session_id)
     with pytest.raises(ValueError, match="no longer active"):
         record_attempt(db, analysed, session_id, exercise.id, exercise.solution[:1], 1)
+
+
+def test_wrong_answer_resets_position_and_successful_retry_finishes_session(db, analysed):
+    import time
+
+    from chesscoach.storage.models import PracticeSession
+
+    generate(db, analysed)
+    exercise = next(e for e in next_exercises(db, analysed) if chess.Board(e.fen).legal_moves.count() > 1)
+    initial = source_board(db, analysed, exercise.id)
+    state = {
+        "initial_board": initial,
+        "board": initial.copy(),
+        "started": time.monotonic(),
+        "hints": 0,
+        "submitted": False,
+        "feedback": None,
+        "session_id": begin_session(db, analysed, exercise.mode),
+    }
+    wrong = next(move.uci() for move in initial.legal_moves if move.uci() != exercise.solution[0])
+    assert not submit_answer(db, analysed, exercise, state, [wrong])
+    assert state["board"].fen() == initial.fen()
+    assert not state["submitted"] and state["feedback"] == "wrong"
+    assert exercise.id not in [item.id for item in next_exercises(db, analysed)]
+    assert exercise.id in [item.id for item in next_exercises(db, analysed, include_id=exercise.id)]
+    with db.session() as session:
+        assert session.get(PracticeSession, state["session_id"]).finished_at is None
+    assert submit_answer(db, analysed, exercise, state, exercise.solution[:1])
+    assert state["submitted"] and state["feedback"] == "correct"
+    assert state["board"].fen() != initial.fen()
+    with db.session() as session:
+        assert session.get(PracticeSession, state["session_id"]).finished_at is not None
+        assert session.get(Exercise, exercise.id).streak == 0  # A retry is still scheduled for review.
+        attempts = session.scalars(
+            select(Attempt).where(Attempt.session_id == state["session_id"]).order_by(Attempt.id)
+        ).all()
+        assert [attempt.correct for attempt in attempts] == [False, True]
+
+
+def test_practice_selection_does_not_load_full_analysis_history(db, analysed, monkeypatch):
+    generate(db, analysed)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Practice loaded every game evaluation")
+
+    monkeypatch.setattr("chesscoach.practice.evaluation_rows", forbidden)
+    assert next_exercises(db, analysed)
+
+
+def test_playground_keeps_wrong_puzzle_and_accepts_retry(db, analysed, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("CHESSCOACH_DATABASE_URL", str(db.engine.url))
+    monkeypatch.setenv("CHESSCOACH_DATA_DIR", str(tmp_path))
+    generate(db, analysed)
+    exercise = next_exercises(db, analysed)[0]
+    initial = chess.Board(exercise.fen)
+    wrong = next(move.uci() for move in initial.legal_moves if move.uci() != exercise.solution[0])
+    events = [wrong]
+
+    def board_event(board, key, *args, **kwargs):
+        if key.startswith("exercise_board") and events:
+            return chess.Move.from_uci(events.pop(0))
+        return None
+
+    monkeypatch.setattr("chesscoach.dashboard.widgets.board_widget", board_event)
+    script = Path(__file__).parents[1] / "src/chesscoach/dashboard/app.py"
+    view = AppTest.from_file(str(script)).run(timeout=30)
+    view.sidebar.radio[0].set_value("Practice Playground").run(timeout=30)
+    assert not view.exception
+    assert any("Wrong answer. Try again." in item.value for item in view.error)
+    position = next(item for item in view.selectbox if item.label == "Position")
+    assert position.value == exercise.id
+    state = view.session_state[f"practice_{analysed}_mistakes_{exercise.id}"]
+    assert state["board"].fen() == exercise.fen and not state["submitted"]
+    events.append(exercise.solution[0])
+    view.run(timeout=30)
+    assert not view.exception
+    assert any("Correct!" in item.value for item in view.success)
+    with db.session() as session:
+        assert [a.correct for a in session.scalars(select(Attempt).order_by(Attempt.id))] == [False, True]

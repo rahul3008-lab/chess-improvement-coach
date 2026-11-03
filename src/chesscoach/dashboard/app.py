@@ -24,12 +24,12 @@ from chesscoach.practice import (
     finish_session,
     generate,
     next_exercises,
-    record_attempt,
     source_board,
+    submit_answer,
     tablebase_moves,
 )
 from chesscoach.providers import canonical
-from chesscoach.reports import evaluation_rows, overview, period_report, refresh_coaching
+from chesscoach.reports import evaluation_rows, overview, period_report, profile_counts, refresh_coaching
 from chesscoach.storage.db import Database
 from chesscoach.storage.models import (
     Account,
@@ -236,7 +236,16 @@ filters = dict(
     rating_min=rating_bounds[0] or None,
     rating_max=rating_bounds[1] if rating_bounds[1] < 4000 else None,
 )
-data = overview(db, owner, **filters)
+analytic_pages = {
+    "Player Overview",
+    "Rating Progress",
+    "Game Explorer",
+    "Opening Analysis",
+    "Tactical Weaknesses",
+    "Middlegame Analysis",
+    "Endgame Analysis",
+}
+data = overview(db, owner, **filters) if page in analytic_pages else profile_counts(db, owner)
 st.sidebar.caption(f"{data['analysed_games']} analysed · {data['unanalysed_games']} awaiting analysis")
 if st.sidebar.button("Refresh data"):
     st.rerun()
@@ -261,7 +270,7 @@ def watch_analysis():
     key = f"analysis_job_signature_{owner}"
     previous = st.session_state.get(key)
     st.session_state[key] = signature
-    if previous is not None and previous != signature:
+    if previous is not None and previous != signature and page != "Practice Playground":
         st.rerun()
     outstanding = counts.get("pending", 0) + counts.get("running", 0)
     if outstanding:
@@ -320,6 +329,16 @@ def diagnosis(phase=None):
             st.link_button("Open source game", game.url)
 
 
+def rerun_practice():
+    from streamlit.errors import StreamlitAPIException
+
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()  # Initial full-page execution / Streamlit AppTest.
+
+
+@st.fragment
 def playground():
     mode_label = st.selectbox(
         "Practice mode",
@@ -353,23 +372,40 @@ def playground():
                     if not board.is_valid():
                         raise ValueError("Invalid chess position.")
                     st.session_state[key] = board
-                    st.rerun()
+                    opponent = st.session_state.pop(f"{key}_opponent", None)
+                    if opponent:
+                        opponent.close()
+                    rerun_practice()
                 except ValueError as error:
                     st.error(str(error))
-            st.caption("You move first in the chosen position. Every move is checked by python-chess.")
+            st.caption("Click a piece, then its destination. Illegal moves leave the board unchanged.")
         board = st.session_state.setdefault(key, chess.Board())
         with left:
-            move = board_widget(board, f"engine_board_{owner}")
+            move = board_widget(board, f"engine_board_{owner}", thinking=True)
         if move:
             try:
-                with Stockfish(settings) as engine:
-                    board.push(move)
-                    reply = engine.play(board, skill=skill)
-                    if reply:
-                        board.push(reply)
-                st.rerun()
-            except (ValueError, OSError) as error:
-                st.error(str(error))
+                # Keep the opponent alive between turns; stage the board until the reply succeeds.
+                opponent_key = f"{key}_opponent"
+                if opponent_key not in st.session_state:
+                    st.session_state[opponent_key] = Stockfish(settings)
+                trial = board.copy()
+                trial.push(move)
+                reply = st.session_state[opponent_key].play(trial, skill=skill, seconds=0.2)
+                if reply:
+                    trial.push(reply)
+                st.session_state[key] = trial
+                st.session_state.pop(f"{key}_error", None)
+            except (ValueError, OSError, chess.engine.EngineError) as error:
+                st.session_state[f"{key}_error"] = str(error)
+                opponent = st.session_state.pop(f"{key}_opponent", None)
+                if opponent:
+                    try:
+                        opponent.close()
+                    except (OSError, chess.engine.EngineError):
+                        pass
+            rerun_practice()
+        if st.session_state.get(f"{key}_error"):
+            st.error(st.session_state[f"{key}_error"])
         if board.is_game_over():
             st.success(f"Game finished: {board.result()}")
         st.code(board.fen())
@@ -378,7 +414,10 @@ def playground():
     if st.button("Generate exercises from my analysis"):
         st.success(f"Created {generate(db, owner, mode)} exercises.")
     include_future = st.checkbox("Include exercises scheduled for later")
-    exercises = next_exercises(db, owner, mode, due_only=not include_future)
+    position_key = f"practice_position_{owner}_{mode}"
+    exercises = next_exercises(
+        db, owner, mode, due_only=not include_future, include_id=st.session_state.get(position_key)
+    )
     if not exercises:
         st.info(
             "No exercises are due. Analyse games, generate exercises, or include future reviews. Ambiguous engine choices are excluded."
@@ -386,18 +425,20 @@ def playground():
         if mode == "endgame":
             st.caption("You can also practise a custom endgame FEN in Play against engine.")
         return
+    by_id = {exercise.id: exercise for exercise in exercises}
     exercise_id = st.selectbox(
         "Position",
         [e.id for e in exercises],
-        format_func=lambda value: next(
-            f"#{e.id} · game {e.game_id} · {e.topic}" for e in exercises if e.id == value
-        ),
+        format_func=lambda value: f"#{value} · game {by_id[value].game_id} · {by_id[value].topic}",
+        key=position_key,
     )
-    exercise = next(e for e in exercises if e.id == exercise_id)
+    exercise = by_id[exercise_id]
     key = f"practice_{owner}_{mode}_{exercise_id}"
     if key not in st.session_state:
+        initial_board = source_board(db, owner, exercise_id)
         st.session_state[key] = {
-            "board": source_board(db, owner, exercise_id),
+            "board": initial_board.copy(),
+            "initial_board": initial_board,
             "started": time.monotonic(),
             "hints": 0,
             "session_id": begin_session(db, owner, mode),
@@ -408,7 +449,10 @@ def playground():
     left, right = st.columns([1.2, 1], gap="large")
     with left:
         move = board_widget(
-            state["board"], f"exercise_board_{key}", "white" if chess.Board(exercise.fen).turn else "black"
+            state["board"],
+            f"exercise_board_{key}",
+            "white" if state["initial_board"].turn else "black",
+            feedback=state["feedback"],
         )
     with right:
         st.subheader("Find the engine's preferred continuation")
@@ -421,19 +465,10 @@ def playground():
             variation = st.text_input("Variation (SAN or UCI, separated by spaces)")
             if st.button("Submit calculation", disabled=state["submitted"]):
                 try:
-                    state["feedback"] = record_attempt(
-                        db,
-                        owner,
-                        state["session_id"],
-                        exercise_id,
-                        variation.split(),
-                        time.monotonic() - state["started"],
-                        state["hints"],
-                        settings.training.spaced_repetition,
+                    submit_answer(
+                        db, owner, exercise, state, variation.split(), settings.training.spaced_repetition
                     )
-                    state["submitted"] = True
-                    finish_session(db, owner, state["session_id"])
-                    st.rerun()
+                    rerun_practice()
                 except ValueError as error:
                     st.error(str(error))
         if st.button("Hint", disabled=state["submitted"]):
@@ -441,19 +476,25 @@ def playground():
             st.info(f"Consider the piece on {exercise.solution[0][:2]}.")
         if st.button("Reveal continuation"):
             state["hints"] += 1
+            state["revealed"] = True
+        if state.get("revealed"):
             st.code(" ".join(exercise.solution))
         if state["submitted"]:
-            if state["feedback"]:
-                st.success("Recorded: preferred continuation found.")
-            else:
-                st.warning("Recorded for review. Compare your idea with the engine line.")
+            st.success("Correct! You found the preferred continuation.")
             st.code(" ".join(exercise.solution))
+        elif state["feedback"] == "wrong":
+            st.error("Wrong answer. Try again.")
+        next_id = next((item.id for item in exercises if item.id != exercise_id), None)
+        if next_id is not None:
+            st.button("Next position", on_click=lambda: st.session_state.update({position_key: next_id}))
         if st.button("Retry this position"):
             if not state["submitted"]:
                 finish_session(db, owner, state["session_id"])
             del st.session_state[key]
-            st.rerun()
-        st.caption("After grading you can continue exploring legal variations on the board.")
+            rerun_practice()
+        st.caption(
+            "Click a piece, then its destination. Wrong answers reset the position so you can try again."
+        )
         if mode == "endgame":
             table_path = st.text_input("Optional local Syzygy directory")
             if st.button("Probe local tablebases") and table_path:
@@ -463,20 +504,10 @@ def playground():
                     st.error(f"Tablebase unavailable for this position: {error}")
     if move:
         if not state["submitted"] and mode != "calculation":
-            state["feedback"] = record_attempt(
-                db,
-                owner,
-                state["session_id"],
-                exercise_id,
-                [move.uci()],
-                time.monotonic() - state["started"],
-                state["hints"],
-                settings.training.spaced_repetition,
-            )
-            state["submitted"] = True
-            finish_session(db, owner, state["session_id"])
-        state["board"].push(move)
-        st.rerun()
+            submit_answer(db, owner, exercise, state, [move.uci()], settings.training.spaced_repetition)
+        else:
+            state["board"].push(move)
+        rerun_practice()
 
 
 title(page, f"{player.display_name}'s study room · Built from your games, at your pace.")
